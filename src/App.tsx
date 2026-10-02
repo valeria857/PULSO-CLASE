@@ -22,7 +22,12 @@ import {
   Sparkles,
   ArrowDown,
   BookOpen,
-  History
+  History,
+  Download,
+  Trash2,
+  FileSpreadsheet,
+  FileJson,
+  Database
 } from 'lucide-react';
 
 // Tipos de voto estrictos para evitar inconsistencias de tipado
@@ -31,8 +36,9 @@ export type VoteType = 'entendi' | 'dudas' | 'perdi';
 export interface VoteRecord {
   id: string;
   type: VoteType;
+  subject: string; // Tema o materia de la clase en el momento del voto
   comment?: string;
-  timestamp: number;
+  timestamp: number; // Fecha y hora exacta (epoch ms)
 }
 
 export interface SavedSession {
@@ -100,21 +106,76 @@ const STORAGE_KEY = 'pulso_clase_data_v1';
 const DEFAULT_SUBJECT = 'Matemática';
 const DEFAULT_QUESTION = '¿Qué tan claro te quedó el tema principal visto en la clase de hoy?';
 
+// Registros de prueba precargados para que el docente pueda explorar de inmediato
+const SAMPLE_INITIAL_DATA: PollState = {
+  subject: 'Matemática: Fracciones',
+  question: '¿Qué tan claro te quedó el tema de suma y resta con distinto denominador?',
+  votes: [
+    {
+      id: 'demo-v1',
+      type: 'entendi',
+      subject: 'Matemática: Fracciones',
+      comment: 'Todo claro usando el mínimo común múltiplo.',
+      timestamp: Date.now() - 1000 * 60 * 18,
+    },
+    {
+      id: 'demo-v2',
+      type: 'dudas',
+      subject: 'Matemática: Fracciones',
+      comment: 'Me costó simplificar al final.',
+      timestamp: Date.now() - 1000 * 60 * 10,
+    },
+    {
+      id: 'demo-v3',
+      type: 'perdi',
+      subject: 'Matemática: Fracciones',
+      comment: 'No entendí cuándo se multiplica cruzado.',
+      timestamp: Date.now() - 1000 * 60 * 4,
+    },
+  ],
+  history: [
+    {
+      id: 'sesion-demo-prev1',
+      subject: 'Física: Leyes de Newton',
+      question: '¿Quedó clara la diferencia entre masa y peso?',
+      votes: [
+        {
+          id: 'demo-h1',
+          type: 'entendi',
+          subject: 'Física: Leyes de Newton',
+          comment: 'Muy claro el ejemplo de la Luna.',
+          timestamp: Date.now() - 1000 * 60 * 60 * 24,
+        },
+        {
+          id: 'demo-h2',
+          type: 'dudas',
+          subject: 'Física: Leyes de Newton',
+          comment: 'La aceleración de gravedad me generó dudas.',
+          timestamp: Date.now() - 1000 * 60 * 60 * 23,
+        },
+      ],
+      timestamp: Date.now() - 1000 * 60 * 60 * 24,
+    },
+  ],
+};
+
 export default function App() {
   // Estado principal de la clase (Tema + Pregunta + Votos activos + Historial de sesiones guardadas)
   const [poll, setPoll] = useState<PollState>(() => {
     // PUNTO CRÍTICO DE ERROR: Manejo seguro de JSON.parse con fallback y migración retrocompatible
-    // Si localStorage tiene datos de la versión anterior (sin subject o history),
-    // evitamos inconsistencias rellenando valores por defecto seguros.
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed.question === 'string' && Array.isArray(parsed.votes)) {
+          // Si el usuario ya tiene datos o historial guardado, preservamos todo
           return {
             subject: typeof parsed.subject === 'string' && parsed.subject.trim() ? parsed.subject : DEFAULT_SUBJECT,
             question: parsed.question,
-            votes: parsed.votes,
+            votes: parsed.votes.map((v: any) => ({
+              ...v,
+              subject: v.subject || parsed.subject || DEFAULT_SUBJECT,
+            })),
             history: Array.isArray(parsed.history) ? parsed.history : [],
           };
         }
@@ -122,12 +183,8 @@ export default function App() {
     } catch (e) {
       console.error('Error al recuperar datos de LocalStorage:', e);
     }
-    return {
-      subject: DEFAULT_SUBJECT,
-      question: DEFAULT_QUESTION,
-      votes: [],
-      history: [],
-    };
+    // Si no había datos previos en el navegador, inicializamos con los registros de prueba
+    return SAMPLE_INITIAL_DATA;
   });
 
   // Estado del formulario de votación actual
@@ -193,9 +250,9 @@ export default function App() {
     const newVoteRecord: VoteRecord = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       type: selectedVote,
-      // Sanitizamos el comentario quitando espacios al inicio y final
+      subject: poll.subject, // Guarda el tema o materia de la clase actual
       comment: anonymousComment.trim() ? anonymousComment.trim() : undefined,
-      timestamp: Date.now(),
+      timestamp: Date.now(), // Guarda la fecha y hora exacta
     };
 
     // Actualizamos el estado agregando el voto nuevo al final
@@ -282,6 +339,114 @@ export default function App() {
     setTimeout(() => {
       setSessionToast(null);
     }, 4500);
+  };
+
+  // Borrar los datos de una clase específica archivada
+  const handleDeleteSession = (sessionId: string) => {
+    setPoll(prev => ({
+      ...prev,
+      history: (prev.history || []).filter(s => s.id !== sessionId),
+    }));
+    setSessionToast('Clase eliminada del historial.');
+    setTimeout(() => setSessionToast(null), 3500);
+  };
+
+  // Cargar/Restablecer registros de prueba
+  const handleLoadDemoData = () => {
+    setPoll(SAMPLE_INITIAL_DATA);
+    setSessionToast('Datos de prueba cargados.');
+    setTimeout(() => setSessionToast(null), 3500);
+  };
+
+  // Exportar respaldo en formato JSON
+  const exportToJSON = () => {
+    const backupData = {
+      app: 'PULSO CLASE',
+      exportedAt: new Date().toISOString(),
+      activePoll: {
+        subject: poll.subject,
+        question: poll.question,
+        votesCount: poll.votes.length,
+        votes: poll.votes,
+      },
+      archivedSessions: poll.history || [],
+    };
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `pulso-clase-respaldo-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setSessionToast('Respaldo JSON descargado con éxito.');
+    setTimeout(() => setSessionToast(null), 3500);
+  };
+
+  // Exportar datos a formato CSV (Compatible con Microsoft Excel / Google Sheets con UTF-8 BOM)
+  const exportToCSV = () => {
+    const rows: {
+      estado: string;
+      materia: string;
+      pregunta: string;
+      fechaHora: string;
+      voto: string;
+      comentario: string;
+    }[] = [];
+
+    // Votos de la clase actual
+    poll.votes.forEach(v => {
+      rows.push({
+        estado: 'Clase Actual (En curso)',
+        materia: v.subject || poll.subject,
+        pregunta: poll.question,
+        fechaHora: new Date(v.timestamp).toLocaleString('es-AR'),
+        voto: v.type === 'entendi' ? 'Entendí' : v.type === 'dudas' ? 'Tengo dudas' : 'Me perdí',
+        comentario: v.comment || 'Sin comentario',
+      });
+    });
+
+    // Votos de clases archivadas
+    (poll.history || []).forEach(sess => {
+      sess.votes.forEach(v => {
+        rows.push({
+          estado: `Archivada (${new Date(sess.timestamp).toLocaleDateString('es-AR')})`,
+          materia: sess.subject,
+          pregunta: sess.question,
+          fechaHora: new Date(v.timestamp).toLocaleString('es-AR'),
+          voto: v.type === 'entendi' ? 'Entendí' : v.type === 'dudas' ? 'Tengo dudas' : 'Me perdí',
+          comentario: v.comment || 'Sin comentario',
+        });
+      });
+    });
+
+    if (rows.length === 0) {
+      alert('No hay votos registrados para exportar.');
+      return;
+    }
+
+    const headers = ['Estado Sesión', 'Tema o Materia', 'Pregunta de Salida', 'Fecha y Hora', 'Voto', 'Comentario Anónimo'];
+    const csvContent = [
+      headers.join(';'),
+      ...rows.map(r => [
+        `"${r.estado.replace(/"/g, '""')}"`,
+        `"${r.materia.replace(/"/g, '""')}"`,
+        `"${r.pregunta.replace(/"/g, '""')}"`,
+        `"${r.fechaHora.replace(/"/g, '""')}"`,
+        `"${r.voto.replace(/"/g, '""')}"`,
+        `"${r.comentario.replace(/"/g, '""')}"`,
+      ].join(';')),
+    ].join('\r\n');
+
+    // \uFEFF fuerza a Excel a interpretar UTF-8 para tildes y caracteres en español
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `pulso-clase-reporte-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setSessionToast('Reporte CSV descargado con éxito.');
+    setTimeout(() => setSessionToast(null), 3500);
   };
 
   // Filtrado de comentarios para inspección docente
@@ -611,17 +776,31 @@ export default function App() {
               </div>
             </div>
 
-            {totalVotes > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowResetConfirm(true)}
-                className="text-xs font-bold text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-2.5 py-1.5 rounded-xl transition-all inline-flex items-center gap-1.5 active:scale-95 shadow-xs"
-                title="Iniciar Nueva Sesión / Reiniciar Votos"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Nueva Sesión / Reiniciar</span>
-              </button>
-            )}
+            <div className="flex items-center gap-1.5">
+              {(totalVotes > 0 || (poll.history && poll.history.length > 0)) && (
+                <button
+                  type="button"
+                  onClick={exportToCSV}
+                  className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-1.5 rounded-xl transition-all inline-flex items-center gap-1 active:scale-95 shadow-2xs"
+                  title="Exportar reporte a Excel (CSV)"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Exportar</span>
+                </button>
+              )}
+
+              {totalVotes > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirm(true)}
+                  className="text-xs font-bold text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-2.5 py-1.5 rounded-xl transition-all inline-flex items-center gap-1.5 active:scale-95 shadow-xs"
+                  title="Iniciar Nueva Sesión / Reiniciar Votos"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Nueva Sesión</span>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Gráfico de Barras Interactivo */}
@@ -819,28 +998,66 @@ export default function App() {
       {/* MODAL / VISOR DE HISTORIAL DE SESIONES GUARDADAS */}
       {showHistoryModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-xl border border-slate-200 space-y-4 max-h-[85vh] flex flex-col">
+          <div className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-xl border border-slate-200 space-y-4 max-h-[88vh] flex flex-col">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
               <div className="flex items-center gap-2">
                 <History className="w-4 h-4 text-indigo-600" />
-                <h4 className="font-bold text-slate-900 text-sm">Sesiones Archivadas</h4>
+                <h4 className="font-bold text-slate-900 text-sm">Historial de Clases ({poll.history?.length || 0})</h4>
               </div>
               <button
                 type="button"
                 onClick={() => setShowHistoryModal(false)}
-                className="text-slate-400 hover:text-slate-600 text-xs font-bold p-1"
+                className="text-slate-400 hover:text-slate-600 text-xs font-bold p-1 rounded-md"
               >
                 ✕
               </button>
             </div>
 
+            {/* Herramientas de Exportación */}
+            <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 space-y-1.5">
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                Descargar respaldo
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={exportToCSV}
+                  className="py-1.5 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs transition-colors"
+                  title="Descargar tabla compatible con Excel y Google Sheets"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Excel (.CSV)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={exportToJSON}
+                  className="py-1.5 px-2 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs transition-colors"
+                  title="Descargar copia íntegra en JSON"
+                >
+                  <FileJson className="w-3.5 h-3.5" />
+                  <span>Copia (.JSON)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Listado de Sesiones Archivadas */}
             <div className="overflow-y-auto space-y-3 flex-1 pr-1">
               {(!poll.history || poll.history.length === 0) ? (
-                <p className="text-center py-6 text-xs text-slate-400">
-                  No hay sesiones guardadas todavía.
-                </p>
+                <div className="text-center py-6 space-y-2">
+                  <p className="text-xs text-slate-400">
+                    No hay sesiones guardadas en el historial.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleLoadDemoData}
+                    className="text-xs font-semibold text-indigo-600 hover:underline inline-flex items-center gap-1"
+                  >
+                    <Database className="w-3 h-3" />
+                    <span>Cargar registros de prueba</span>
+                  </button>
+                </div>
               ) : (
-                poll.history.map((sess, idx) => {
+                poll.history.map((sess) => {
                   const sTotal = sess.votes.length;
                   const sEntendi = sess.votes.filter(v => v.type === 'entendi').length;
                   const sDudas = sess.votes.filter(v => v.type === 'dudas').length;
@@ -850,9 +1067,9 @@ export default function App() {
                   const pPerdi = sTotal > 0 ? Math.round((sPerdi / sTotal) * 100) : 0;
 
                   return (
-                    <div key={sess.id || idx} className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-2 text-xs">
+                    <div key={sess.id} className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-2 text-xs relative group">
                       <div className="flex justify-between items-start gap-2">
-                        <div>
+                        <div className="pr-6">
                           <span className="font-bold text-slate-900 text-sm block">
                             {sess.subject}
                           </span>
@@ -861,9 +1078,21 @@ export default function App() {
                             {new Date(sess.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </span>
                         </div>
-                        <span className="text-[10px] font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full">
-                          {sTotal} {sTotal === 1 ? 'voto' : 'votos'}
-                        </span>
+                        
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="text-[10px] font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full">
+                            {sTotal} {sTotal === 1 ? 'voto' : 'votos'}
+                          </span>
+                          {/* Botón para borrar los datos de esta clase archivada */}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSession(sess.id)}
+                            className="text-slate-400 hover:text-rose-600 p-1 rounded-md hover:bg-rose-50 transition-colors ml-1"
+                            title="Borrar esta clase del historial"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="grid grid-cols-3 gap-1 text-[11px] text-center pt-1 font-semibold">
@@ -883,13 +1112,23 @@ export default function App() {
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowHistoryModal(false)}
-              className="w-full py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
-            >
-              Cerrar
-            </button>
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={handleLoadDemoData}
+                className="text-[11px] text-slate-400 hover:text-indigo-600 transition-colors"
+                title="Restablecer datos de prueba"
+              >
+                Cargar datos de prueba
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(false)}
+                className="py-1.5 px-4 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         </div>
       )}
