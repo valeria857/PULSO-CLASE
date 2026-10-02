@@ -1,0 +1,6 @@
+{
+  "name": "PULSO CLASE",
+  "description": "Preguntas de salida rápidas y pulso en tiempo real para docentes. Detectá a tiempo quién entendió, quién tiene dudas y quién se quedó perdido.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
