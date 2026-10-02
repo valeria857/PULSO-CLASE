@@ -2,12 +2,12 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * PULSO CLASE - Versión optimizada para uso en celular (M3)
+ * PULSO CLASE - Versión con validaciones robustas y manejo de errores (M4)
  * Aplicación móvil y sencilla para docentes y sus grupos de clase.
  * Resuelve: "El docente no sabe quién se quedó perdido hasta que llega el examen."
  */
 
-import React, { useState, useEffect, useId } from 'react';
+import React, { useState, useEffect, useId, useRef } from 'react';
 import { 
   CheckCircle2, 
   HelpCircle, 
@@ -28,7 +28,8 @@ import {
   FileSpreadsheet,
   FileJson,
   Database,
-  Inbox
+  Inbox,
+  AlertTriangle
 } from 'lucide-react';
 
 // Tipos de voto estrictos para evitar inconsistencias de tipado
@@ -58,7 +59,6 @@ export interface PollState {
 }
 
 // Configuración visual y descriptiva de las 3 opciones de voto obligatorias
-// Contraste reforzado para visibilidad en luz solar y textos >= 16px
 const VOTE_OPTIONS: {
   id: VoteType;
   label: string;
@@ -101,7 +101,7 @@ const VOTE_OPTIONS: {
   },
 ];
 
-// Clave única en LocalStorage para no colisionar con otras apps
+// Clave única en LocalStorage
 const STORAGE_KEY = 'pulso_clase_data_v1';
 
 // Materia y Pregunta inicial predeterminada sugerida para docentes
@@ -162,7 +162,7 @@ const SAMPLE_INITIAL_DATA: PollState = {
 };
 
 export default function App() {
-  // Estado principal de la clase
+  // Estado principal de la clase con sanitización defensiva de datos leídos
   const [poll, setPoll] = useState<PollState>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -170,13 +170,16 @@ export default function App() {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed.question === 'string' && Array.isArray(parsed.votes)) {
           return {
-            subject: typeof parsed.subject === 'string' && parsed.subject.trim() ? parsed.subject : DEFAULT_SUBJECT,
-            question: parsed.question,
+            subject: typeof parsed.subject === 'string' && parsed.subject.trim() ? parsed.subject.trim().slice(0, 80) : DEFAULT_SUBJECT,
+            question: parsed.question.trim().slice(0, 250) || DEFAULT_QUESTION,
             votes: parsed.votes.map((v: any) => ({
-              ...v,
-              subject: v.subject || parsed.subject || DEFAULT_SUBJECT,
+              id: typeof v?.id === 'string' ? v.id : `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              type: ['entendi', 'dudas', 'perdi'].includes(v?.type) ? (v.type as VoteType) : 'entendi',
+              subject: typeof v?.subject === 'string' ? v.subject.slice(0, 80) : DEFAULT_SUBJECT,
+              comment: typeof v?.comment === 'string' && v.comment.trim() ? v.comment.trim().slice(0, 280) : undefined,
+              timestamp: typeof v?.timestamp === 'number' && !isNaN(v.timestamp) ? v.timestamp : Date.now(),
             })),
-            history: Array.isArray(parsed.history) ? parsed.history : [],
+            history: Array.isArray(parsed.history) ? parsed.history.filter((s: any) => s && typeof s.id === 'string') : [],
           };
         }
       }
@@ -193,7 +196,12 @@ export default function App() {
   const [showSuccessBadge, setShowSuccessBadge] = useState(false);
   const [sessionToast, setSessionToast] = useState<string | null>(null);
 
-  // Filtro interactivo del gráfico de barras para ver comentarios asociados
+  // Errores de validación en UI
+  const [voteError, setVoteError] = useState<string | null>(null);
+  const [subjectError, setSubjectError] = useState<string | null>(null);
+  const [questionError, setQuestionError] = useState<string | null>(null);
+
+  // Filtro interactivo del gráfico
   const [filterByType, setFilterByType] = useState<VoteType | 'todos'>('todos');
 
   // Modo edición de la pregunta y del tema
@@ -205,18 +213,25 @@ export default function App() {
   // Modales
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [sessionToDelete, setSessionToDelete] = useState<SavedSession | null>(null);
+
+  // Control de spam / doble clic rápido (cooldown timestamp)
+  const lastVoteTimestampRef = useRef<number>(0);
 
   // IDs accesibles para conectar <label> con inputs
   const subjectInputId = useId();
   const questionInputId = useId();
   const commentInputId = useId();
 
-  // Persistencia garantizada en localStorage
+  // Persistencia garantizada en localStorage con manejo de QuotaExceededError
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(poll));
-    } catch (err) {
-      console.error('No se pudo guardar en LocalStorage:', err);
+    } catch (err: any) {
+      console.error('Error al guardar en LocalStorage:', err);
+      if (err?.name === 'QuotaExceededError' || err?.code === 22) {
+        setSessionToast('⚠️ Memoria del navegador llena. Por favor exportá tus clases y limpiá el historial.');
+      }
     }
   }, [poll]);
 
@@ -229,28 +244,46 @@ export default function App() {
     perdi: poll.votes.filter(v => v.type === 'perdi').length,
   };
 
-  // Cálculo seguro evitando división por cero
   const percentages: Record<VoteType, number> = {
     entendi: totalVotes > 0 ? Math.round((counts.entendi / totalVotes) * 100) : 0,
     dudas: totalVotes > 0 ? Math.round((counts.dudas / totalVotes) * 100) : 0,
     perdi: totalVotes > 0 ? Math.round((counts.perdi / totalVotes) * 100) : 0,
   };
 
-  // Enviar el voto
+  // Enviar el voto con validaciones QA y prevención de doble clic
   const handleSubmitVote = (e: React.FormEvent) => {
     e.preventDefault();
 
+    // 1. Validación: Opción seleccionada obligatoria
     if (!selectedVote) {
+      setVoteError('Por favor elegí una de las 3 opciones ("Entendí", "Tengo dudas" o "Me perdí") antes de enviar.');
+      const optionsSection = document.getElementById('opciones-voto-etiqueta');
+      if (optionsSection) {
+        optionsSection.scrollIntoView({ behavior: 'smooth' });
+      }
       return;
     }
 
+    // 2. Control de Spam / Múltiples clics seguidos (Debounce de 2 segundos)
+    const now = Date.now();
+    if (now - lastVoteTimestampRef.current < 2000 || isSubmitting) {
+      return; // Bloquea clics duplicados instantáneos
+    }
+    lastVoteTimestampRef.current = now;
     setIsSubmitting(true);
+    setVoteError(null);
+
+    // 3. Sanitización del comentario: cortar a 280 chars y remover caracteres de control invisibles
+    const cleanComment = anonymousComment
+      .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '')
+      .trim()
+      .slice(0, 280);
 
     const newVoteRecord: VoteRecord = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       type: selectedVote,
       subject: poll.subject,
-      comment: anonymousComment.trim() ? anonymousComment.trim() : undefined,
+      comment: cleanComment ? cleanComment : undefined,
       timestamp: Date.now(),
     };
 
@@ -259,6 +292,7 @@ export default function App() {
       votes: [newVoteRecord, ...prev.votes],
     }));
 
+    // Reset tras éxito
     setSelectedVote(null);
     setAnonymousComment('');
     setIsSubmitting(false);
@@ -274,27 +308,47 @@ export default function App() {
     }
   };
 
-  // Guardar pregunta
+  // Guardar pregunta con validación de no vacía y longitud mínima
   const handleSaveQuestion = () => {
-    if (tempQuestion.trim()) {
-      setPoll(prev => ({
-        ...prev,
-        question: tempQuestion.trim(),
-      }));
+    const cleanQuestion = tempQuestion.replace(/[\r\n]+/g, ' ').trim();
+    if (cleanQuestion.length < 5) {
+      setQuestionError('La pregunta debe tener al menos 5 caracteres.');
+      return;
     }
+    if (cleanQuestion.length > 250) {
+      setQuestionError('La pregunta no puede superar los 250 caracteres.');
+      return;
+    }
+
+    setPoll(prev => ({
+      ...prev,
+      question: cleanQuestion,
+    }));
+    setTempQuestion(cleanQuestion);
+    setQuestionError(null);
     setIsEditingQuestion(false);
   };
 
-  // Guardar tema
+  // Guardar tema con validación de no vacío y longitud mínima
   const handleSaveSubject = (newSubject?: string) => {
-    const value = (newSubject !== undefined ? newSubject : tempSubject).trim();
-    if (value) {
-      setPoll(prev => ({
-        ...prev,
-        subject: value,
-      }));
-      setTempSubject(value);
+    const rawVal = newSubject !== undefined ? newSubject : tempSubject;
+    const cleanSubject = rawVal.replace(/[\r\n\t]+/g, ' ').trim();
+
+    if (cleanSubject.length < 2) {
+      setSubjectError('El nombre del tema debe tener al menos 2 letras.');
+      return;
     }
+    if (cleanSubject.length > 80) {
+      setSubjectError('El tema no puede exceder los 80 caracteres.');
+      return;
+    }
+
+    setPoll(prev => ({
+      ...prev,
+      subject: cleanSubject,
+    }));
+    setTempSubject(cleanSubject);
+    setSubjectError(null);
     setIsEditingSubject(false);
   };
 
@@ -320,6 +374,7 @@ export default function App() {
     setShowResetConfirm(false);
     setSelectedVote(null);
     setAnonymousComment('');
+    setVoteError(null);
     setFilterByType('todos');
 
     if (hasVotesToArchive) {
@@ -333,12 +388,14 @@ export default function App() {
     }, 5000);
   };
 
-  // Borrar clase archivada
-  const handleDeleteSession = (sessionId: string) => {
+  // Confirmar y borrar clase archivada
+  const handleConfirmDeleteSession = () => {
+    if (!sessionToDelete) return;
     setPoll(prev => ({
       ...prev,
-      history: (prev.history || []).filter(s => s.id !== sessionId),
+      history: (prev.history || []).filter(s => s.id !== sessionToDelete.id),
     }));
+    setSessionToDelete(null);
     setSessionToast('La clase fue eliminada del historial.');
     setTimeout(() => setSessionToast(null), 4000);
   };
@@ -346,11 +403,12 @@ export default function App() {
   // Cargar datos de prueba
   const handleLoadDemoData = () => {
     setPoll(SAMPLE_INITIAL_DATA);
+    setVoteError(null);
     setSessionToast('Se cargaron los datos de ejemplo para probar la app.');
     setTimeout(() => setSessionToast(null), 4000);
   };
 
-  // Exportar a JSON
+  // Exportar a JSON con sanitización
   const exportToJSON = () => {
     const backupData = {
       aplicacion: 'PULSO CLASE',
@@ -374,8 +432,17 @@ export default function App() {
     setTimeout(() => setSessionToast(null), 4000);
   };
 
-  // Exportar a CSV
+  // Exportar a CSV con protección contra Excel Formula Injection (=, +, -, @)
   const exportToCSV = () => {
+    const escapeCSVField = (val: unknown): string => {
+      let str = val === null || val === undefined ? '' : String(val);
+      // Prevención de CSV/Excel Formula Injection
+      if (/^[=+\-@\t\r]/.test(str)) {
+        str = `'${str}`;
+      }
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
     const rows: {
       estado: string;
       materia: string;
@@ -386,23 +453,31 @@ export default function App() {
     }[] = [];
 
     poll.votes.forEach(v => {
+      const validDate = typeof v?.timestamp === 'number' && !isNaN(v.timestamp) 
+        ? new Date(v.timestamp).toLocaleString('es-AR') 
+        : 'Fecha no registrada';
+
       rows.push({
         estado: 'Clase Actual',
         materia: v.subject || poll.subject,
         pregunta: poll.question,
-        fechaHora: new Date(v.timestamp).toLocaleString('es-AR'),
+        fechaHora: validDate,
         voto: v.type === 'entendi' ? 'Entendí' : v.type === 'dudas' ? 'Tengo dudas' : 'Me perdí',
         comentario: v.comment || 'Sin comentario',
       });
     });
 
     (poll.history || []).forEach(sess => {
-      sess.votes.forEach(v => {
+      (sess.votes || []).forEach(v => {
+        const validDate = typeof v?.timestamp === 'number' && !isNaN(v.timestamp) 
+          ? new Date(v.timestamp).toLocaleString('es-AR') 
+          : 'Fecha no registrada';
+
         rows.push({
-          estado: `Archivada (${new Date(sess.timestamp).toLocaleDateString('es-AR')})`,
+          estado: `Archivada (${sess.subject})`,
           materia: sess.subject,
           pregunta: sess.question,
-          fechaHora: new Date(v.timestamp).toLocaleString('es-AR'),
+          fechaHora: validDate,
           voto: v.type === 'entendi' ? 'Entendí' : v.type === 'dudas' ? 'Tengo dudas' : 'Me perdí',
           comentario: v.comment || 'Sin comentario',
         });
@@ -419,12 +494,12 @@ export default function App() {
     const csvContent = [
       headers.join(';'),
       ...rows.map(r => [
-        `"${r.estado.replace(/"/g, '""')}"`,
-        `"${r.materia.replace(/"/g, '""')}"`,
-        `"${r.pregunta.replace(/"/g, '""')}"`,
-        `"${r.fechaHora.replace(/"/g, '""')}"`,
-        `"${r.voto.replace(/"/g, '""')}"`,
-        `"${r.comentario.replace(/"/g, '""')}"`,
+        escapeCSVField(r.estado),
+        escapeCSVField(r.materia),
+        escapeCSVField(r.pregunta),
+        escapeCSVField(r.fechaHora),
+        escapeCSVField(r.voto),
+        escapeCSVField(r.comentario),
       ].join(';')),
     ].join('\r\n');
 
@@ -447,7 +522,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col items-center justify-start pb-16 px-3.5 sm:px-4 pt-4 sm:pt-7 overflow-x-hidden">
       
-      {/* ENCABEZADO / TÍTULO PRINCIPAL (Alto contraste solar) */}
+      {/* ENCABEZADO / TÍTULO PRINCIPAL */}
       <header className="w-full max-w-md mx-auto text-center mb-5">
         <div className="inline-flex items-center gap-2 bg-indigo-700 text-white font-extrabold px-3.5 py-1.5 rounded-full text-base tracking-wide mb-2 shadow-sm">
           <Sparkles className="w-4 h-4 shrink-0" />
@@ -461,10 +536,10 @@ export default function App() {
         </p>
       </header>
 
-      {/* CONTENEDOR PRINCIPAL MOBILE-FIRST (Optimizado desde 320 px de ancho) */}
+      {/* CONTENEDOR PRINCIPAL */}
       <main className="w-full max-w-md mx-auto space-y-5">
 
-        {/* MENSAJE DE CONFIRMACIÓN O INFORMACIÓN VISIBLE (Español claro) */}
+        {/* MENSAJE DE CONFIRMACIÓN O INFORMACIÓN VISIBLE */}
         {sessionToast && (
           <div className="p-4 bg-emerald-50 border-2 border-emerald-600 text-emerald-950 rounded-2xl flex items-start justify-between gap-3 shadow-sm text-base font-bold animate-fade-in">
             <div className="flex items-start gap-2.5">
@@ -483,7 +558,7 @@ export default function App() {
           </div>
         )}
 
-        {/* 1. SECCIÓN: TEMA O MATERIA DE LA CLASE (Con etiqueta visible y botones secundarios) */}
+        {/* 1. SECCIÓN: TEMA O MATERIA DE LA CLASE */}
         <section className="bg-white rounded-2xl shadow-sm border border-slate-300 p-4 sm:p-5 transition-all">
           <div className="flex items-center justify-between gap-2 mb-2">
             <label 
@@ -514,11 +589,11 @@ export default function App() {
                   {poll.subject}
                 </p>
               </div>
-              {/* Botón secundario con borde */}
               <button
                 type="button"
                 onClick={() => {
                   setTempSubject(poll.subject);
+                  setSubjectError(null);
                   setIsEditingSubject(true);
                 }}
                 className="shrink-0 inline-flex items-center gap-1.5 text-base font-bold text-slate-800 hover:text-slate-950 bg-slate-100 hover:bg-slate-200 border border-slate-300 py-2 px-3 rounded-xl transition-colors active:scale-95"
@@ -537,7 +612,11 @@ export default function App() {
                 id={subjectInputId}
                 type="text"
                 value={tempSubject}
-                onChange={(e) => setTempSubject(e.target.value)}
+                maxLength={80}
+                onChange={(e) => {
+                  setTempSubject(e.target.value);
+                  if (subjectError) setSubjectError(null);
+                }}
                 placeholder="Ejemplo: Matemática: Fracciones"
                 className="w-full rounded-xl border-2 border-slate-400 p-3 text-base font-semibold text-slate-900 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200 outline-none bg-white"
                 autoFocus
@@ -547,7 +626,14 @@ export default function App() {
                   }
                 }}
               />
-              {/* Opciones rápidas de materias */}
+
+              {subjectError && (
+                <p className="text-rose-700 text-base font-bold flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{subjectError}</span>
+                </p>
+              )}
+
               <div>
                 <span className="block text-base font-semibold text-slate-700 mb-1.5">
                   Sugerencias rápidas:
@@ -575,7 +661,10 @@ export default function App() {
               <div className="flex items-center justify-end gap-2.5 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsEditingSubject(false)}
+                  onClick={() => {
+                    setSubjectError(null);
+                    setIsEditingSubject(false);
+                  }}
                   className="px-4 py-2.5 text-base font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition-colors"
                 >
                   Cancelar
@@ -592,7 +681,7 @@ export default function App() {
           )}
         </section>
 
-        {/* 2. SECCIÓN: PREGUNTA DE SALIDA (Con etiqueta visible) */}
+        {/* 2. SECCIÓN: PREGUNTA DE SALIDA */}
         <section className="bg-white rounded-2xl shadow-sm border border-slate-300 p-4 sm:p-5 transition-all">
           <div className="flex items-center justify-between gap-2 mb-2">
             <label 
@@ -606,6 +695,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setTempQuestion(poll.question);
+                  setQuestionError(null);
                   setIsEditingQuestion(true);
                 }}
                 className="inline-flex items-center gap-1.5 text-base font-bold text-slate-800 hover:text-slate-950 bg-slate-100 hover:bg-slate-200 border border-slate-300 py-1.5 px-3 rounded-xl transition-colors active:scale-95"
@@ -625,16 +715,31 @@ export default function App() {
               <textarea
                 id={questionInputId}
                 value={tempQuestion}
-                onChange={(e) => setTempQuestion(e.target.value)}
+                maxLength={250}
+                onChange={(e) => {
+                  setTempQuestion(e.target.value);
+                  if (questionError) setQuestionError(null);
+                }}
                 rows={3}
                 className="w-full rounded-xl border-2 border-slate-400 p-3 text-base font-semibold text-slate-900 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-200 outline-none resize-none bg-white"
                 placeholder="Ejemplo: ¿Qué parte del ejercicio resultó más difícil?"
                 autoFocus
               />
+
+              {questionError && (
+                <p className="text-rose-700 text-base font-bold flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{questionError}</span>
+                </p>
+              )}
+
               <div className="flex items-center justify-end gap-2.5">
                 <button
                   type="button"
-                  onClick={() => setIsEditingQuestion(false)}
+                  onClick={() => {
+                    setQuestionError(null);
+                    setIsEditingQuestion(false);
+                  }}
                   className="px-4 py-2.5 text-base font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition-colors"
                 >
                   Cancelar
@@ -655,11 +760,10 @@ export default function App() {
           )}
         </section>
 
-        {/* 3. SECCIÓN: FORMULARIO DE VOTACIÓN Y COMENTARIO ANÓNIMO */}
+        {/* 3. SECCIÓN: FORMULARIO DE VOTACIÓN */}
         <section className="bg-white rounded-2xl shadow-sm border border-slate-300 p-4 sm:p-5">
           <form onSubmit={handleSubmitVote} className="space-y-5">
             <div>
-              {/* Etiqueta visible obligatoria */}
               <label 
                 id="opciones-voto-etiqueta"
                 className="block text-base font-extrabold uppercase tracking-wide text-slate-900 mb-2.5"
@@ -667,7 +771,7 @@ export default function App() {
                 Tu respuesta (elegí una opción):
               </label>
 
-              {/* Botones de selección de 3 opciones táctiles (>= 48px de alto para una sola mano) */}
+              {/* Botones de selección de 3 opciones táctiles */}
               <div className="grid grid-cols-1 gap-3" role="radiogroup" aria-labelledby="opciones-voto-etiqueta">
                 {VOTE_OPTIONS.map((opt) => {
                   const Icon = opt.icon;
@@ -679,7 +783,10 @@ export default function App() {
                       type="button"
                       role="radio"
                       aria-checked={isSelected}
-                      onClick={() => setSelectedVote(opt.id)}
+                      onClick={() => {
+                        setSelectedVote(opt.id);
+                        if (voteError) setVoteError(null);
+                      }}
                       className={`w-full min-h-[58px] flex items-center justify-between p-3.5 rounded-2xl border-2 text-left transition-all active:scale-[0.98] touch-manipulation cursor-pointer ${
                         isSelected 
                           ? `${opt.borderActive} shadow-sm` 
@@ -711,9 +818,17 @@ export default function App() {
                   );
                 })}
               </div>
+
+              {/* Error de validación visible si intentan enviar sin elegir */}
+              {voteError && (
+                <div className="mt-3 p-3 bg-rose-50 border-2 border-rose-500 text-rose-950 rounded-xl flex items-center gap-2 font-bold text-base animate-fade-in">
+                  <AlertTriangle className="w-5 h-5 text-rose-700 shrink-0" />
+                  <span>{voteError}</span>
+                </div>
+              )}
             </div>
 
-            {/* Campo de Comentario anónimo con etiqueta visible */}
+            {/* Campo de Comentario anónimo con limitación a 280 caracteres */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label 
@@ -730,7 +845,7 @@ export default function App() {
               <textarea
                 id={commentInputId}
                 value={anonymousComment}
-                onChange={(e) => setAnonymousComment(e.target.value)}
+                onChange={(e) => setAnonymousComment(e.target.value.slice(0, 280))}
                 maxLength={280}
                 rows={3}
                 placeholder="Escribí aquí en qué te trabaste o qué te gustaría repasar..."
@@ -742,22 +857,28 @@ export default function App() {
               </div>
             </div>
 
-            {/* BOTÓN PRINCIPAL DESTACADO ÚNICO DE LA PANTALLA (Jerarquía Primaria Dominante) */}
+            {/* BOTÓN PRINCIPAL DESTACADO */}
             <button
               type="submit"
-              disabled={!selectedVote || isSubmitting}
+              disabled={isSubmitting}
               className={`w-full min-h-[56px] py-4 px-5 rounded-2xl font-extrabold text-lg flex items-center justify-center gap-2.5 transition-all shadow-md touch-manipulation cursor-pointer ${
                 selectedVote && !isSubmitting
                   ? 'bg-indigo-700 hover:bg-indigo-800 active:bg-indigo-900 text-white shadow-indigo-300 ring-2 ring-indigo-500 transform active:scale-[0.98]'
-                  : 'bg-slate-300 text-slate-600 border border-slate-400 cursor-not-allowed shadow-none'
+                  : 'bg-slate-300 text-slate-700 border border-slate-400 shadow-none'
               }`}
             >
               <Send className="w-5 h-5 shrink-0" />
-              <span>{selectedVote ? 'Enviar mi voto a la clase' : 'Elegí una opción arriba para votar'}</span>
+              <span>
+                {isSubmitting 
+                  ? 'Registrando tu voto...' 
+                  : selectedVote 
+                    ? 'Enviar mi voto a la clase' 
+                    : 'Elegí una opción arriba para votar'}
+              </span>
             </button>
           </form>
 
-          {/* Feedback inmediato visible tras votar (Español claro sin tecnicismos) */}
+          {/* Feedback inmediato visible tras votar */}
           {showSuccessBadge && (
             <div className="mt-4 p-4 bg-emerald-50 border-2 border-emerald-600 text-emerald-950 rounded-2xl flex items-start gap-3 animate-fade-in shadow-sm">
               <div className="bg-emerald-700 text-white p-1.5 rounded-full shrink-0 mt-0.5">
@@ -773,7 +894,7 @@ export default function App() {
           )}
         </section>
 
-        {/* 4. SECCIÓN: RESUMEN VISUAL EN VIVO (Con estado vacío ilustrativo) */}
+        {/* 4. SECCIÓN: RESUMEN VISUAL EN VIVO */}
         <section 
           id="resumen-clase"
           className="bg-white rounded-2xl shadow-sm border border-slate-300 p-4 sm:p-5 scroll-mt-6"
@@ -823,7 +944,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* 5. ESTADO VACÍO (Cuando el docente abre una nueva clase y aún no hay votos) */}
+          {/* 5. ESTADO VACÍO */}
           {totalVotes === 0 ? (
             <div className="mt-5 p-6 bg-slate-50 border-2 border-dashed border-slate-300 rounded-2xl text-center space-y-3">
               <div className="w-14 h-14 bg-indigo-100 text-indigo-800 rounded-2xl flex items-center justify-center mx-auto border border-indigo-200">
@@ -848,7 +969,7 @@ export default function App() {
             </div>
           ) : (
             <>
-              {/* Gráfico de Barras Interactivo con datos reales */}
+              {/* Gráfico de Barras Interactivo */}
               <div className="mt-5 space-y-4">
                 {VOTE_OPTIONS.map((opt) => {
                   const count = counts[opt.id];
@@ -885,7 +1006,6 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Barra visual de progreso */}
                       <div className="w-full bg-slate-200 rounded-full h-4 overflow-hidden p-0.5">
                         <div
                           className={`h-full rounded-full transition-all duration-500 ease-out ${opt.barColor}`}
@@ -897,7 +1017,7 @@ export default function App() {
                 })}
               </div>
 
-              {/* Diagnóstico pedagógico claro para el docente */}
+              {/* Diagnóstico pedagógico */}
               <div className="mt-5 p-4 rounded-2xl bg-slate-100 border border-slate-300 text-base text-slate-800 flex items-start gap-3">
                 <div className="shrink-0 text-indigo-700 mt-1">
                   <ArrowDown className="w-5 h-5 stroke-[2.5]" />
@@ -918,7 +1038,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Listado de comentarios anónimos recibidos */}
+              {/* Listado de comentarios anónimos */}
               <div className="mt-6 pt-5 border-t border-slate-200">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3.5">
                   <h4 className="text-base font-extrabold uppercase tracking-wide text-slate-900 flex items-center gap-2">
@@ -926,7 +1046,6 @@ export default function App() {
                     <span>Comentarios recibidos ({filteredComments.length})</span>
                   </h4>
 
-                  {/* Filtro secundario de comentarios */}
                   {commentsList.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       <button
@@ -996,7 +1115,7 @@ export default function App() {
 
       </main>
 
-      {/* MODAL DE CONFIRMACIÓN PARA NUEVA SESIÓN (En español claro, sin tecnicismos) */}
+      {/* MODAL DE CONFIRMACIÓN PARA NUEVA SESIÓN */}
       {showResetConfirm && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl border-2 border-slate-300 space-y-4">
@@ -1030,6 +1149,39 @@ export default function App() {
                 className="w-full py-3 px-4 text-base font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition-colors"
               >
                 Volver a la clase actual
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIRMACIÓN PARA BORRAR CLASE ARCHIVADA */}
+      {sessionToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl border-2 border-rose-300 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center mx-auto border border-rose-200">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <div className="text-center">
+              <h4 className="font-extrabold text-slate-900 text-xl">¿Borrar esta clase del historial?</h4>
+              <p className="text-base font-semibold text-slate-700 mt-2 leading-relaxed">
+                Se eliminarán permanentemente los {sessionToDelete.votes.length} votos registrados de la clase <strong className="text-slate-950">"{sessionToDelete.subject}"</strong>.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={handleConfirmDeleteSession}
+                className="w-full py-3.5 px-4 text-base font-extrabold text-white bg-rose-700 hover:bg-rose-800 rounded-xl transition-colors shadow-sm"
+              >
+                Sí, borrar definitivamente
+              </button>
+              <button
+                type="button"
+                onClick={() => setSessionToDelete(null)}
+                className="w-full py-3 px-4 text-base font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition-colors"
+              >
+                Cancelar
               </button>
             </div>
           </div>
@@ -1126,7 +1278,7 @@ export default function App() {
                           </span>
                           <button
                             type="button"
-                            onClick={() => handleDeleteSession(sess.id)}
+                            onClick={() => setSessionToDelete(sess)}
                             className="text-slate-500 hover:text-rose-700 p-1.5 rounded-lg hover:bg-rose-50 transition-colors"
                             title="Borrar esta clase del historial"
                           >
@@ -1173,7 +1325,7 @@ export default function App() {
         </div>
       )}
 
-      {/* PIE DE PÁGINA (Legible bajo luz solar con fuente base >= 16px) */}
+      {/* PIE DE PÁGINA */}
       <footer className="mt-8 text-center text-base font-semibold text-slate-700">
         PULSO CLASE • Ticket de salida sencillo para educación activa
       </footer>
