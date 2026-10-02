@@ -2,12 +2,12 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * PULSO CLASE - Versión con validaciones robustas y manejo de errores (M4)
+ * PULSO CLASE - Versión con Inteligencia Artificial estructurada (M5)
  * Aplicación móvil y sencilla para docentes y sus grupos de clase.
  * Resuelve: "El docente no sabe quién se quedó perdido hasta que llega el examen."
  */
 
-import React, { useState, useEffect, useId, useRef } from 'react';
+import React, { useState, useEffect, useId, useRef, useCallback } from 'react';
 import { 
   CheckCircle2, 
   HelpCircle, 
@@ -19,28 +19,28 @@ import {
   Edit3, 
   Users, 
   Check, 
-  Sparkles,
-  ArrowDown,
-  BookOpen,
-  History,
-  Download,
-  Trash2,
-  FileSpreadsheet,
-  FileJson,
-  Database,
-  Inbox,
+  Sparkles, 
+  ArrowDown, 
+  BookOpen, 
+  History, 
+  Download, 
+  Trash2, 
+  FileSpreadsheet, 
+  FileJson, 
+  Database, 
+  Inbox, 
   AlertTriangle
 } from 'lucide-react';
 
-// Tipos de voto estrictos para evitar inconsistencias de tipado
+// Tipos de voto estrictos
 export type VoteType = 'entendi' | 'dudas' | 'perdi';
 
 export interface VoteRecord {
   id: string;
   type: VoteType;
-  subject: string; // Tema o materia de la clase en el momento del voto
+  subject: string;
   comment?: string;
-  timestamp: number; // Fecha y hora exacta (epoch ms)
+  timestamp: number;
 }
 
 export interface SavedSession {
@@ -58,7 +58,41 @@ export interface PollState {
   history: SavedSession[];
 }
 
-// Configuración visual y descriptiva de las 3 opciones de voto obligatorias
+// Estructura fija del esquema de respuesta de Gemini (responseSchema)
+export interface RepasoItem {
+  titulo: string;
+  descripcion: string;
+  prioridad: 'alta' | 'media' | 'baja' | string;
+}
+
+export interface AnalisisIA {
+  puntos_repaso: RepasoItem[];
+  resumen_animo: string;
+}
+
+// Objeto JSON de prueba quemado (Mock data) para probar sin consumir llamadas a la API
+export const MOCK_AI_RESPONSE: AnalisisIA = {
+  puntos_repaso: [
+    {
+      titulo: 'Mínimo Común Múltiplo (m.c.m.) en denominadores distintos',
+      descripcion: 'Varios alumnos mencionaron que se traban al buscar el denominador común cuando los números no son múltiplos directos. Conviene arrancar la próxima clase con 2 ejemplos paso a paso en el pizarrón.',
+      prioridad: 'alta'
+    },
+    {
+      titulo: 'Simplificación final de la fracción resultante',
+      descripcion: 'Entienden el procedimiento de suma pero se pierden al reducir la fracción a su mínima expresión. Conviene repasar criterios básicos de divisibilidad (por 2, 3 y 5).',
+      prioridad: 'media'
+    },
+    {
+      titulo: 'Regla de signos en restas de fracciones',
+      descripcion: 'Confusión aislada al operar signos negativos en el numerador. Un repaso rápido de 3 minutos al inicio bastará para fijar el concepto.',
+      prioridad: 'baja'
+    }
+  ],
+  resumen_animo: 'El grupo muestra buena predisposición y ganas de aprender, pero hay frustración puntual en el paso mecánico del cálculo del m.c.m. Con un breve repaso inicial recuperarán la seguridad rápidamente.'
+};
+
+// Configuración de las 3 opciones con contraste reforzado y textos >= 16px
 const VOTE_OPTIONS: {
   id: VoteType;
   label: string;
@@ -101,14 +135,10 @@ const VOTE_OPTIONS: {
   },
 ];
 
-// Clave única en LocalStorage
 const STORAGE_KEY = 'pulso_clase_data_v1';
-
-// Materia y Pregunta inicial predeterminada sugerida para docentes
 const DEFAULT_SUBJECT = 'Matemática';
 const DEFAULT_QUESTION = '¿Qué tan claro te quedó el tema principal visto en la clase de hoy?';
 
-// Registros de prueba precargados para explorar de inmediato
 const SAMPLE_INITIAL_DATA: PollState = {
   subject: 'Matemática: Fracciones',
   question: '¿Qué tan claro te quedó el tema de suma y resta con distinto denominador?',
@@ -162,24 +192,37 @@ const SAMPLE_INITIAL_DATA: PollState = {
 };
 
 export default function App() {
-  // Estado principal de la clase con sanitización defensiva de datos leídos
+  // Estado principal con deserialización 100% defensiva
   const [poll, setPoll] = useState<PollState>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed.question === 'string' && Array.isArray(parsed.votes)) {
+        if (parsed && typeof parsed === 'object') {
+          const rawVotes = Array.isArray(parsed.votes) ? parsed.votes.filter(Boolean) : [];
+          const rawHistory = Array.isArray(parsed.history) ? parsed.history.filter(Boolean) : [];
+
           return {
-            subject: typeof parsed.subject === 'string' && parsed.subject.trim() ? parsed.subject.trim().slice(0, 80) : DEFAULT_SUBJECT,
-            question: parsed.question.trim().slice(0, 250) || DEFAULT_QUESTION,
-            votes: parsed.votes.map((v: any) => ({
+            subject: typeof parsed.subject === 'string' && parsed.subject.trim() 
+              ? parsed.subject.trim().slice(0, 80) 
+              : DEFAULT_SUBJECT,
+            question: typeof parsed.question === 'string' && parsed.question.trim() 
+              ? parsed.question.trim().slice(0, 250) 
+              : DEFAULT_QUESTION,
+            votes: rawVotes.map((v: any) => ({
               id: typeof v?.id === 'string' ? v.id : `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               type: ['entendi', 'dudas', 'perdi'].includes(v?.type) ? (v.type as VoteType) : 'entendi',
               subject: typeof v?.subject === 'string' ? v.subject.slice(0, 80) : DEFAULT_SUBJECT,
               comment: typeof v?.comment === 'string' && v.comment.trim() ? v.comment.trim().slice(0, 280) : undefined,
               timestamp: typeof v?.timestamp === 'number' && !isNaN(v.timestamp) ? v.timestamp : Date.now(),
             })),
-            history: Array.isArray(parsed.history) ? parsed.history.filter((s: any) => s && typeof s.id === 'string') : [],
+            history: rawHistory.map((s: any) => ({
+              id: typeof s?.id === 'string' ? s.id : `sesion-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              subject: typeof s?.subject === 'string' ? s.subject.slice(0, 80) : DEFAULT_SUBJECT,
+              question: typeof s?.question === 'string' ? s.question.slice(0, 250) : DEFAULT_QUESTION,
+              votes: Array.isArray(s?.votes) ? s.votes.filter(Boolean) : [],
+              timestamp: typeof s?.timestamp === 'number' && !isNaN(s.timestamp) ? s.timestamp : Date.now(),
+            })),
           };
         }
       }
@@ -189,22 +232,22 @@ export default function App() {
     return SAMPLE_INITIAL_DATA;
   });
 
-  // Estado del formulario de votación actual
+  // Estado del formulario de votación
   const [selectedVote, setSelectedVote] = useState<VoteType | null>(null);
   const [anonymousComment, setAnonymousComment] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccessBadge, setShowSuccessBadge] = useState(false);
   const [sessionToast, setSessionToast] = useState<string | null>(null);
 
-  // Errores de validación en UI
+  // Errores de validación
   const [voteError, setVoteError] = useState<string | null>(null);
   const [subjectError, setSubjectError] = useState<string | null>(null);
   const [questionError, setQuestionError] = useState<string | null>(null);
 
-  // Filtro interactivo del gráfico
+  // Filtro de comentarios
   const [filterByType, setFilterByType] = useState<VoteType | 'todos'>('todos');
 
-  // Modo edición de la pregunta y del tema
+  // Modos de edición
   const [isEditingQuestion, setIsEditingQuestion] = useState(false);
   const [tempQuestion, setTempQuestion] = useState(poll.question);
   const [isEditingSubject, setIsEditingSubject] = useState(false);
@@ -215,33 +258,86 @@ export default function App() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<SavedSession | null>(null);
 
-  // Control de spam / doble clic rápido (cooldown timestamp)
-  const lastVoteTimestampRef = useRef<number>(0);
+  // Estados de IA con Gemini
+  const [aiAnalysis, setAiAnalysis] = useState<AnalisisIA | null>(null);
+  const [isLoadingAI, setIsLoadingAI] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [isMockActive, setIsMockActive] = useState<boolean>(false);
 
-  // IDs accesibles para conectar <label> con inputs
+  // Refs para control de spam y temporizadores seguros
+  const lastVoteTimestampRef = useRef<number>(0);
+  const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const successBadgeTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // IDs para <label>
   const subjectInputId = useId();
   const questionInputId = useId();
   const commentInputId = useId();
 
-  // Persistencia garantizada en localStorage con manejo de QuotaExceededError
+  // Función segura para mostrar avisos con auto-limpieza
+  const triggerToast = useCallback((msg: string, durationMs: number = 4000) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    setSessionToast(msg);
+    toastTimerRef.current = setTimeout(() => {
+      setSessionToast(null);
+    }, durationMs);
+  }, []);
+
+  // Limpieza de temporizadores al desmontar componente
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      if (successBadgeTimerRef.current) clearTimeout(successBadgeTimerRef.current);
+    };
+  }, []);
+
+  // Cierre accesible con tecla 'Escape'
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (sessionToDelete) {
+          setSessionToDelete(null);
+        } else if (showResetConfirm) {
+          setShowResetConfirm(false);
+        } else if (showHistoryModal) {
+          setShowHistoryModal(false);
+        } else if (isEditingSubject) {
+          setTempSubject(poll.subject);
+          setSubjectError(null);
+          setIsEditingSubject(false);
+        } else if (isEditingQuestion) {
+          setTempQuestion(poll.question);
+          setQuestionError(null);
+          setIsEditingQuestion(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [sessionToDelete, showResetConfirm, showHistoryModal, isEditingSubject, isEditingQuestion, poll.subject, poll.question]);
+
+  // Persistencia garantizada en localStorage con detección de QuotaExceededError
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(poll));
     } catch (err: any) {
       console.error('Error al guardar en LocalStorage:', err);
       if (err?.name === 'QuotaExceededError' || err?.code === 22) {
-        setSessionToast('⚠️ Memoria del navegador llena. Por favor exportá tus clases y limpiá el historial.');
+        triggerToast('⚠️ Memoria del navegador llena. Por favor exportá tus clases y limpiá el historial.', 6000);
       }
     }
-  }, [poll]);
+  }, [poll, triggerToast]);
 
-  // Cálculos estadísticos
-  const totalVotes = poll.votes.length;
+  // Cálculos estadísticos defensivos
+  const currentVotes = Array.isArray(poll?.votes) ? poll.votes : [];
+  const totalVotes = currentVotes.length;
 
   const counts: Record<VoteType, number> = {
-    entendi: poll.votes.filter(v => v.type === 'entendi').length,
-    dudas: poll.votes.filter(v => v.type === 'dudas').length,
-    perdi: poll.votes.filter(v => v.type === 'perdi').length,
+    entendi: currentVotes.filter(v => v?.type === 'entendi').length,
+    dudas: currentVotes.filter(v => v?.type === 'dudas').length,
+    perdi: currentVotes.filter(v => v?.type === 'perdi').length,
   };
 
   const percentages: Record<VoteType, number> = {
@@ -250,11 +346,15 @@ export default function App() {
     perdi: totalVotes > 0 ? Math.round((counts.perdi / totalVotes) * 100) : 0,
   };
 
-  // Enviar el voto con validaciones QA y prevención de doble clic
+  const commentsList = currentVotes.filter(v => Boolean(v?.comment && v.comment.trim()));
+  const filteredComments = filterByType === 'todos' 
+    ? commentsList 
+    : commentsList.filter(v => v.type === filterByType);
+
+  // Enviar voto con validaciones y bloqueo de doble clic
   const handleSubmitVote = (e: React.FormEvent) => {
     e.preventDefault();
 
-    // 1. Validación: Opción seleccionada obligatoria
     if (!selectedVote) {
       setVoteError('Por favor elegí una de las 3 opciones ("Entendí", "Tengo dudas" o "Me perdí") antes de enviar.');
       const optionsSection = document.getElementById('opciones-voto-etiqueta');
@@ -264,16 +364,14 @@ export default function App() {
       return;
     }
 
-    // 2. Control de Spam / Múltiples clics seguidos (Debounce de 2 segundos)
     const now = Date.now();
     if (now - lastVoteTimestampRef.current < 2000 || isSubmitting) {
-      return; // Bloquea clics duplicados instantáneos
+      return;
     }
     lastVoteTimestampRef.current = now;
     setIsSubmitting(true);
     setVoteError(null);
 
-    // 3. Sanitización del comentario: cortar a 280 chars y remover caracteres de control invisibles
     const cleanComment = anonymousComment
       .replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '')
       .trim()
@@ -283,22 +381,22 @@ export default function App() {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       type: selectedVote,
       subject: poll.subject,
-      comment: cleanComment ? cleanComment : undefined,
+      comment: cleanComment.length > 0 ? cleanComment : undefined,
       timestamp: Date.now(),
     };
 
     setPoll(prev => ({
       ...prev,
-      votes: [newVoteRecord, ...prev.votes],
+      votes: [newVoteRecord, ...(Array.isArray(prev.votes) ? prev.votes : [])],
     }));
 
-    // Reset tras éxito
     setSelectedVote(null);
     setAnonymousComment('');
     setIsSubmitting(false);
     setShowSuccessBadge(true);
 
-    setTimeout(() => {
+    if (successBadgeTimerRef.current) clearTimeout(successBadgeTimerRef.current);
+    successBadgeTimerRef.current = setTimeout(() => {
       setShowSuccessBadge(false);
     }, 5000);
 
@@ -308,7 +406,7 @@ export default function App() {
     }
   };
 
-  // Guardar pregunta con validación de no vacía y longitud mínima
+  // Guardar pregunta con validación
   const handleSaveQuestion = () => {
     const cleanQuestion = tempQuestion.replace(/[\r\n]+/g, ' ').trim();
     if (cleanQuestion.length < 5) {
@@ -329,7 +427,14 @@ export default function App() {
     setIsEditingQuestion(false);
   };
 
-  // Guardar tema con validación de no vacío y longitud mínima
+  // Cancelar edición de pregunta
+  const handleCancelQuestion = () => {
+    setTempQuestion(poll.question);
+    setQuestionError(null);
+    setIsEditingQuestion(false);
+  };
+
+  // Guardar tema con validación
   const handleSaveSubject = (newSubject?: string) => {
     const rawVal = newSubject !== undefined ? newSubject : tempSubject;
     const cleanSubject = rawVal.replace(/[\r\n\t]+/g, ' ').trim();
@@ -352,14 +457,21 @@ export default function App() {
     setIsEditingSubject(false);
   };
 
+  // Cancelar edición de tema
+  const handleCancelSubject = () => {
+    setTempSubject(poll.subject);
+    setSubjectError(null);
+    setIsEditingSubject(false);
+  };
+
   // Iniciar nueva sesión / reiniciar votos
   const handleResetVotes = () => {
-    const hasVotesToArchive = poll.votes.length > 0;
+    const hasVotesToArchive = currentVotes.length > 0;
     const sessionToArchive: SavedSession = {
       id: `sesion-${Date.now()}`,
       subject: poll.subject,
       question: poll.question,
-      votes: [...poll.votes],
+      votes: [...currentVotes],
       timestamp: Date.now(),
     };
 
@@ -367,7 +479,7 @@ export default function App() {
       ...prev,
       votes: [],
       history: hasVotesToArchive 
-        ? [sessionToArchive, ...(prev.history || [])] 
+        ? [sessionToArchive, ...(Array.isArray(prev.history) ? prev.history : [])] 
         : (prev.history || []),
     }));
 
@@ -376,39 +488,124 @@ export default function App() {
     setAnonymousComment('');
     setVoteError(null);
     setFilterByType('todos');
+    setAiAnalysis(null);
+    setAiError(null);
 
     if (hasVotesToArchive) {
-      setSessionToast(`¡Listo! La clase de "${poll.subject}" se guardó en el historial y la pantalla quedó lista para una nueva clase.`);
+      triggerToast(`¡Listo! La clase de "${poll.subject}" se guardó en el historial y la pantalla quedó lista para una nueva clase.`, 5000);
     } else {
-      setSessionToast('Pantalla reiniciada para comenzar una nueva clase.');
+      triggerToast('Pantalla reiniciada para comenzar una nueva clase.', 3500);
     }
-
-    setTimeout(() => {
-      setSessionToast(null);
-    }, 5000);
   };
 
-  // Confirmar y borrar clase archivada
+  // Confirmar borrado de clase archivada
   const handleConfirmDeleteSession = () => {
     if (!sessionToDelete) return;
+    const deletedSubject = sessionToDelete.subject;
     setPoll(prev => ({
       ...prev,
       history: (prev.history || []).filter(s => s.id !== sessionToDelete.id),
     }));
     setSessionToDelete(null);
-    setSessionToast('La clase fue eliminada del historial.');
-    setTimeout(() => setSessionToast(null), 4000);
+    triggerToast(`La clase de "${deletedSubject}" fue eliminada del historial.`, 4000);
   };
 
   // Cargar datos de prueba
   const handleLoadDemoData = () => {
     setPoll(SAMPLE_INITIAL_DATA);
     setVoteError(null);
-    setSessionToast('Se cargaron los datos de ejemplo para probar la app.');
-    setTimeout(() => setSessionToast(null), 4000);
+    setAiAnalysis(null);
+    setAiError(null);
+    triggerToast('Se cargaron los datos de ejemplo para probar la app.', 4000);
   };
 
-  // Exportar a JSON con sanitización
+  // Ejecutar análisis pedagógico con Gemini (o Modo Mock)
+  const handleRunAIAnalysis = async (forceMock: boolean = false) => {
+    if (!forceMock && commentsList.length < 2) {
+      setAiError('Se necesitan al menos 2 comentarios de los alumnos para que la IA pueda detectar patrones de dudas. ¡Invitá al grupo a comentar o probá con el botón de datos de prueba (Mock)!');
+      return;
+    }
+
+    setIsLoadingAI(true);
+    setAiError(null);
+
+    // Timeout de 15 segundos con AbortController
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    try {
+      if (forceMock) {
+        await new Promise(r => setTimeout(r, 600)); // Retardo visual agradable
+        setAiAnalysis(MOCK_AI_RESPONSE);
+        setIsMockActive(true);
+        setIsLoadingAI(false);
+        clearTimeout(timeoutId);
+        triggerToast('Datos de prueba (Mock) cargados en el panel de IA.', 4000);
+        return;
+      }
+
+      const res = await fetch('/api/analizar-clase', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          subject: poll.subject,
+          question: poll.question,
+          comments: commentsList,
+          forceMock: false,
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      const json = await res.json();
+
+      if (!res.ok || !json.success) {
+        setAiError(json.error || 'No se pudo completar el análisis automático.');
+        setIsLoadingAI(false);
+        return;
+      }
+
+      setAiAnalysis(json.data);
+      setIsMockActive(Boolean(json.isMock));
+      setIsLoadingAI(false);
+      triggerToast('¡Análisis pedagógico de Gemini completado!', 4000);
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      setIsLoadingAI(false);
+      if (err.name === 'AbortError') {
+        setAiError('La IA tardó más de lo esperado en responder (tiempo límite alcanzado). Podés intentar de nuevo o explorar el resultado con el botón de datos de prueba (Mock).');
+      } else {
+        setAiError('No pudimos conectar con el servicio de análisis de IA. Verificá tu conexión a internet o probá con el botón de datos de prueba (Mock).');
+      }
+    }
+  };
+
+  // Función universal para descargar archivos en todos los navegadores
+  const triggerBrowserDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+
+    setTimeout(() => {
+      try {
+        if (link.parentNode) {
+          link.parentNode.removeChild(link);
+        }
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        // Enlace liberado
+      }
+    }, 1000);
+  };
+
+  // Exportar a JSON
   const exportToJSON = () => {
     const backupData = {
       aplicacion: 'PULSO CLASE',
@@ -416,27 +613,20 @@ export default function App() {
       claseActual: {
         materia: poll.subject,
         pregunta: poll.question,
-        totalVotos: poll.votes.length,
-        votos: poll.votes,
+        totalVotos: currentVotes.length,
+        votos: currentVotes,
       },
       clasesArchivadas: poll.history || [],
     };
     const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `pulso-clase-respaldo-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    setSessionToast('Copia de seguridad en archivo JSON descargada correctamente.');
-    setTimeout(() => setSessionToast(null), 4000);
+    triggerBrowserDownload(blob, `pulso-clase-respaldo-${new Date().toISOString().slice(0, 10)}.json`);
+    triggerToast('Copia de seguridad en archivo JSON descargada correctamente.', 4000);
   };
 
-  // Exportar a CSV con protección contra Excel Formula Injection (=, +, -, @)
+  // Exportar a CSV con mitigación estricta de Excel Formula Injection
   const exportToCSV = () => {
     const escapeCSVField = (val: unknown): string => {
       let str = val === null || val === undefined ? '' : String(val);
-      // Prevención de CSV/Excel Formula Injection
       if (/^[=+\-@\t\r]/.test(str)) {
         str = `'${str}`;
       }
@@ -452,7 +642,7 @@ export default function App() {
       comentario: string;
     }[] = [];
 
-    poll.votes.forEach(v => {
+    currentVotes.forEach(v => {
       const validDate = typeof v?.timestamp === 'number' && !isNaN(v.timestamp) 
         ? new Date(v.timestamp).toLocaleString('es-AR') 
         : 'Fecha no registrada';
@@ -485,8 +675,7 @@ export default function App() {
     });
 
     if (rows.length === 0) {
-      setSessionToast('Todavía no hay votos registrados para exportar.');
-      setTimeout(() => setSessionToast(null), 4000);
+      triggerToast('Todavía no hay votos registrados para exportar.', 4000);
       return;
     }
 
@@ -504,20 +693,9 @@ export default function App() {
     ].join('\r\n');
 
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `pulso-clase-reporte-${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-    setSessionToast('Planilla de Excel (.CSV) descargada correctamente.');
-    setTimeout(() => setSessionToast(null), 4000);
+    triggerBrowserDownload(blob, `pulso-clase-reporte-${new Date().toISOString().slice(0, 10)}.csv`);
+    triggerToast('Planilla de Excel (.CSV) descargada correctamente.', 4000);
   };
-
-  const commentsList = poll.votes.filter(v => Boolean(v.comment));
-  const filteredComments = filterByType === 'todos' 
-    ? commentsList 
-    : commentsList.filter(v => v.type === filterByType);
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col items-center justify-start pb-16 px-3.5 sm:px-4 pt-4 sm:pt-7 overflow-x-hidden">
@@ -541,7 +719,11 @@ export default function App() {
 
         {/* MENSAJE DE CONFIRMACIÓN O INFORMACIÓN VISIBLE */}
         {sessionToast && (
-          <div className="p-4 bg-emerald-50 border-2 border-emerald-600 text-emerald-950 rounded-2xl flex items-start justify-between gap-3 shadow-sm text-base font-bold animate-fade-in">
+          <div 
+            role="status"
+            aria-live="polite"
+            className="p-4 bg-emerald-50 border-2 border-emerald-600 text-emerald-950 rounded-2xl flex items-start justify-between gap-3 shadow-sm text-base font-bold animate-fade-in"
+          >
             <div className="flex items-start gap-2.5">
               <CheckCircle2 className="w-6 h-6 text-emerald-700 shrink-0 mt-0.5" />
               <span className="leading-snug">{sessionToast}</span>
@@ -628,7 +810,7 @@ export default function App() {
               />
 
               {subjectError && (
-                <p className="text-rose-700 text-base font-bold flex items-center gap-1.5">
+                <p className="text-rose-700 text-base font-bold flex items-center gap-1.5" role="alert">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
                   <span>{subjectError}</span>
                 </p>
@@ -661,10 +843,7 @@ export default function App() {
               <div className="flex items-center justify-end gap-2.5 pt-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setSubjectError(null);
-                    setIsEditingSubject(false);
-                  }}
+                  onClick={handleCancelSubject}
                   className="px-4 py-2.5 text-base font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition-colors"
                 >
                   Cancelar
@@ -727,7 +906,7 @@ export default function App() {
               />
 
               {questionError && (
-                <p className="text-rose-700 text-base font-bold flex items-center gap-1.5">
+                <p className="text-rose-700 text-base font-bold flex items-center gap-1.5" role="alert">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
                   <span>{questionError}</span>
                 </p>
@@ -736,10 +915,7 @@ export default function App() {
               <div className="flex items-center justify-end gap-2.5">
                 <button
                   type="button"
-                  onClick={() => {
-                    setQuestionError(null);
-                    setIsEditingQuestion(false);
-                  }}
+                  onClick={handleCancelQuestion}
                   className="px-4 py-2.5 text-base font-bold text-slate-800 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-xl transition-colors"
                 >
                   Cancelar
@@ -771,7 +947,6 @@ export default function App() {
                 Tu respuesta (elegí una opción):
               </label>
 
-              {/* Botones de selección de 3 opciones táctiles */}
               <div className="grid grid-cols-1 gap-3" role="radiogroup" aria-labelledby="opciones-voto-etiqueta">
                 {VOTE_OPTIONS.map((opt) => {
                   const Icon = opt.icon;
@@ -819,16 +994,15 @@ export default function App() {
                 })}
               </div>
 
-              {/* Error de validación visible si intentan enviar sin elegir */}
               {voteError && (
-                <div className="mt-3 p-3 bg-rose-50 border-2 border-rose-500 text-rose-950 rounded-xl flex items-center gap-2 font-bold text-base animate-fade-in">
+                <div className="mt-3 p-3 bg-rose-50 border-2 border-rose-500 text-rose-950 rounded-xl flex items-center gap-2 font-bold text-base animate-fade-in" role="alert">
                   <AlertTriangle className="w-5 h-5 text-rose-700 shrink-0" />
                   <span>{voteError}</span>
                 </div>
               )}
             </div>
 
-            {/* Campo de Comentario anónimo con limitación a 280 caracteres */}
+            {/* Campo de Comentario anónimo */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label 
@@ -878,9 +1052,12 @@ export default function App() {
             </button>
           </form>
 
-          {/* Feedback inmediato visible tras votar */}
+          {/* Feedback inmediato visible */}
           {showSuccessBadge && (
-            <div className="mt-4 p-4 bg-emerald-50 border-2 border-emerald-600 text-emerald-950 rounded-2xl flex items-start gap-3 animate-fade-in shadow-sm">
+            <div 
+              role="alert"
+              className="mt-4 p-4 bg-emerald-50 border-2 border-emerald-600 text-emerald-950 rounded-2xl flex items-start gap-3 animate-fade-in shadow-sm"
+            >
               <div className="bg-emerald-700 text-white p-1.5 rounded-full shrink-0 mt-0.5">
                 <Check className="w-5 h-5 stroke-[3]" />
               </div>
@@ -916,7 +1093,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Botones secundarios en la cabecera */}
+            {/* Botones secundarios */}
             <div className="flex items-center gap-2">
               {(totalVotes > 0 || (poll.history && poll.history.length > 0)) && (
                 <button
@@ -969,7 +1146,7 @@ export default function App() {
             </div>
           ) : (
             <>
-              {/* Gráfico de Barras Interactivo */}
+              {/* Gráfico de Barras */}
               <div className="mt-5 space-y-4">
                 {VOTE_OPTIONS.map((opt) => {
                   const count = counts[opt.id];
@@ -1017,7 +1194,7 @@ export default function App() {
                 })}
               </div>
 
-              {/* Diagnóstico pedagógico */}
+              {/* Diagnóstico pedagógico rápido */}
               <div className="mt-5 p-4 rounded-2xl bg-slate-100 border border-slate-300 text-base text-slate-800 flex items-start gap-3">
                 <div className="shrink-0 text-indigo-700 mt-1">
                   <ArrowDown className="w-5 h-5 stroke-[2.5]" />
@@ -1038,7 +1215,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Listado de comentarios anónimos */}
+              {/* Listado de comentarios */}
               <div className="mt-6 pt-5 border-t border-slate-200">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-3.5">
                   <h4 className="text-base font-extrabold uppercase tracking-wide text-slate-900 flex items-center gap-2">
@@ -1109,6 +1286,164 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {/* 5. SECCIÓN INTELIGENTE: DIAGNÓSTICO ESTRUCTURADO CON GEMINI */}
+              <div className="mt-7 pt-6 border-t-2 border-slate-200 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 bg-indigo-700 text-white rounded-lg">
+                        <Sparkles className="w-5 h-5" />
+                      </div>
+                      <h4 className="text-lg font-extrabold text-slate-900">
+                        Diagnóstico Inteligente con Gemini
+                      </h4>
+                    </div>
+                    <p className="text-base font-semibold text-slate-700 mt-0.5">
+                      Detectá los 3 puntos prioritarios que debés repasar en la próxima clase.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isLoadingAI}
+                      onClick={() => handleRunAIAnalysis(false)}
+                      className="py-2.5 px-3.5 bg-indigo-700 hover:bg-indigo-800 active:bg-indigo-900 text-white rounded-xl text-base font-extrabold flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95 disabled:bg-slate-300 disabled:text-slate-600"
+                    >
+                      <Sparkles className="w-4 h-4 shrink-0" />
+                      <span>{isLoadingAI ? 'Analizando...' : 'Analizar con IA'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isLoadingAI}
+                      onClick={() => handleRunAIAnalysis(true)}
+                      className="py-2 px-3 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 rounded-xl text-base font-bold flex items-center justify-center gap-1.5 transition-colors active:scale-95"
+                      title="Probar visualización con datos quemados de prueba sin gastar llamadas a la API"
+                    >
+                      <Database className="w-4 h-4 text-indigo-700" />
+                      <span>Datos de prueba (Mock)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Feedback de carga de la IA */}
+                {isLoadingAI && (
+                  <div className="p-4 sm:p-5 bg-indigo-50 border-2 border-indigo-300 rounded-2xl flex items-center gap-3.5 text-base text-indigo-950 font-bold animate-pulse">
+                    <div className="w-6 h-6 border-3 border-indigo-700 border-t-transparent rounded-full animate-spin shrink-0" />
+                    <div>
+                      <p className="font-extrabold text-indigo-950">Analizando comentarios con Gemini 3.8 Flash...</p>
+                      <p className="text-base font-semibold text-indigo-800">
+                        Detectando patrones de dudas para extraer los 3 puntos prioritarios de repaso.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Mensaje de error de la IA */}
+                {aiError && (
+                  <div className="p-4 bg-rose-50 border-2 border-rose-500 rounded-2xl text-base font-bold text-rose-950 space-y-2">
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle className="w-6 h-6 text-rose-700 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-extrabold text-rose-950">Aviso del servicio de IA</p>
+                        <p className="text-base font-semibold text-rose-900 mt-0.5">{aiError}</p>
+                      </div>
+                    </div>
+                    <div className="pt-1 flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => handleRunAIAnalysis(true)}
+                        className="text-base font-extrabold text-indigo-800 hover:text-indigo-950 underline py-1"
+                      >
+                        Ver con datos de prueba (Mock)
+                      </button>
+                      <span className="text-slate-400">•</span>
+                      <button
+                        type="button"
+                        onClick={() => setAiError(null)}
+                        className="text-base font-semibold text-slate-600 hover:text-slate-800"
+                      >
+                        Ocultar aviso
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tarjetas estructuradas generadas con el JSON de la IA */}
+                {aiAnalysis && (
+                  <div className="space-y-4 pt-1 animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <span className="inline-flex items-center gap-1.5 text-base font-bold px-3 py-1 rounded-full bg-indigo-100 text-indigo-950 border border-indigo-200">
+                        <Sparkles className="w-4 h-4 text-indigo-700" />
+                        <span>{isMockActive ? 'Mostrando datos de prueba (Modo Mock)' : 'Diagnóstico generado con Gemini'}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setAiAnalysis(null)}
+                        className="text-base font-bold text-slate-600 hover:text-slate-900 underline"
+                      >
+                        Cerrar diagnóstico
+                      </button>
+                    </div>
+
+                    {/* Resumen empático del ánimo del grupo */}
+                    <div className="p-4 bg-indigo-50 border-2 border-indigo-200 rounded-2xl space-y-1">
+                      <span className="text-base font-extrabold uppercase tracking-wide text-indigo-950 block">
+                        Ánimo y comprensión general del grupo:
+                      </span>
+                      <p className="text-base font-semibold text-slate-800 leading-relaxed">
+                        "{aiAnalysis.resumen_animo}"
+                      </p>
+                    </div>
+
+                    {/* Los 3 Puntos concretos de repaso como tarjetas estructuradas */}
+                    <div className="space-y-3">
+                      <span className="text-base font-extrabold uppercase tracking-wide text-slate-900 block">
+                        Los 3 puntos clave que debés repasar en la siguiente clase:
+                      </span>
+
+                      {aiAnalysis.puntos_repaso.map((item, index) => {
+                        const isAlta = item.prioridad?.toLowerCase().includes('alta');
+                        const isMedia = item.prioridad?.toLowerCase().includes('media');
+
+                        return (
+                          <div
+                            key={index}
+                            className="p-4 bg-white border-2 border-slate-300 rounded-2xl space-y-2 shadow-xs"
+                          >
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                              <div className="flex items-start sm:items-center gap-2">
+                                <span className="w-7 h-7 rounded-full bg-slate-900 text-white font-extrabold text-base flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
+                                  {index + 1}
+                                </span>
+                                <h5 className="font-extrabold text-slate-950 text-lg leading-tight">
+                                  {item.titulo}
+                                </h5>
+                              </div>
+                              <span
+                                className={`text-base font-extrabold px-3 py-0.5 rounded-full border self-start sm:self-auto shrink-0 ${
+                                  isAlta 
+                                    ? 'bg-rose-100 text-rose-950 border-rose-300' 
+                                    : isMedia 
+                                      ? 'bg-amber-100 text-amber-950 border-amber-300' 
+                                      : 'bg-blue-100 text-blue-950 border-blue-300'
+                                }`}
+                              >
+                                Prioridad {item.prioridad}
+                              </span>
+                            </div>
+                            <p className="text-base font-semibold text-slate-700 leading-relaxed sm:pl-9">
+                              {item.descripcion}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
             </>
           )}
         </section>
@@ -1117,8 +1452,16 @@ export default function App() {
 
       {/* MODAL DE CONFIRMACIÓN PARA NUEVA SESIÓN */}
       {showResetConfirm && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl border-2 border-slate-300 space-y-4">
+        <div 
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setShowResetConfirm(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div 
+            className="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl border-2 border-slate-300 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="w-12 h-12 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center mx-auto border border-indigo-200">
               <RotateCcw className="w-6 h-6" />
             </div>
@@ -1127,11 +1470,11 @@ export default function App() {
               <p className="text-base font-semibold text-slate-700 mt-2 leading-relaxed">
                 Se limpiará la pantalla para el nuevo grupo.
               </p>
-              {poll.votes.length > 0 && (
+              {totalVotes > 0 && (
                 <div className="mt-3 p-3 bg-slate-100 border border-slate-300 rounded-xl text-base text-slate-800 text-left space-y-1">
                   <span className="font-extrabold text-slate-950 block">Se archivará en tu Historial:</span>
                   <p>• <strong>Materia:</strong> {poll.subject}</p>
-                  <p>• <strong>Votos:</strong> {poll.votes.length} registrados</p>
+                  <p>• <strong>Votos:</strong> {totalVotes} registrados</p>
                 </div>
               )}
             </div>
@@ -1157,15 +1500,23 @@ export default function App() {
 
       {/* MODAL DE CONFIRMACIÓN PARA BORRAR CLASE ARCHIVADA */}
       {sessionToDelete && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl border-2 border-rose-300 space-y-4">
+        <div 
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setSessionToDelete(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div 
+            className="bg-white rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl border-2 border-rose-300 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center mx-auto border border-rose-200">
               <Trash2 className="w-6 h-6" />
             </div>
             <div className="text-center">
               <h4 className="font-extrabold text-slate-900 text-xl">¿Borrar esta clase del historial?</h4>
               <p className="text-base font-semibold text-slate-700 mt-2 leading-relaxed">
-                Se eliminarán permanentemente los {sessionToDelete.votes.length} votos registrados de la clase <strong className="text-slate-950">"{sessionToDelete.subject}"</strong>.
+                Se eliminarán permanentemente los {(sessionToDelete.votes || []).length} votos registrados de la clase <strong className="text-slate-950">"{sessionToDelete.subject}"</strong>.
               </p>
             </div>
             <div className="flex flex-col gap-2.5 pt-1">
@@ -1190,8 +1541,16 @@ export default function App() {
 
       {/* MODAL / VISOR DE HISTORIAL DE SESIONES GUARDADAS */}
       {showHistoryModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3.5">
-          <div className="bg-white rounded-3xl p-5 max-w-sm w-full shadow-2xl border-2 border-slate-300 space-y-4 max-h-[90vh] flex flex-col">
+        <div 
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3.5"
+          onClick={() => setShowHistoryModal(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div 
+            className="bg-white rounded-3xl p-5 max-w-sm w-full shadow-2xl border-2 border-slate-300 space-y-4 max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div className="flex items-center gap-2">
                 <History className="w-5 h-5 text-indigo-700" />
@@ -1206,7 +1565,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* Botones secundarios de exportación */}
+            {/* Herramientas de exportación */}
             <div className="bg-slate-50 p-3 rounded-2xl border border-slate-300 space-y-2">
               <span className="text-base font-extrabold text-slate-900 block">
                 Descargar informe completo:
@@ -1251,10 +1610,11 @@ export default function App() {
                 </div>
               ) : (
                 poll.history.map((sess) => {
-                  const sTotal = sess.votes.length;
-                  const sEntendi = sess.votes.filter(v => v.type === 'entendi').length;
-                  const sDudas = sess.votes.filter(v => v.type === 'dudas').length;
-                  const sPerdi = sess.votes.filter(v => v.type === 'perdi').length;
+                  const sVotes = Array.isArray(sess.votes) ? sess.votes : [];
+                  const sTotal = sVotes.length;
+                  const sEntendi = sVotes.filter(v => v?.type === 'entendi').length;
+                  const sDudas = sVotes.filter(v => v?.type === 'dudas').length;
+                  const sPerdi = sVotes.filter(v => v?.type === 'perdi').length;
                   const pEntendi = sTotal > 0 ? Math.round((sEntendi / sTotal) * 100) : 0;
                   const pDudas = sTotal > 0 ? Math.round((sDudas / sTotal) * 100) : 0;
                   const pPerdi = sTotal > 0 ? Math.round((sPerdi / sTotal) * 100) : 0;
